@@ -1,0 +1,103 @@
+<?xml version="1.0"?>
+
+<!--
+    ARM-MODULE STAND (PICKING dock tool station)
+    =============================================
+    Fixed gantry that stores the swappable suction-arm module
+    (suction_arm_module.urdf) on a hoist, ready to be transferred onto an
+    AMR deck.
+
+    TRANSFER SEQUENCE (driven from autonomous_mission.py)
+        1. the module hangs from the hoist rods, plate underside at
+           mission_config.MODULE_HOLD_Z_M (6 cm above the AMR's magnet
+           pads)
+        2. the AMR REVERSES in between the legs (the module covers the
+           rear/centre of the deck, behind the sensor mast, so it can only
+           slide on from the back)
+        3. hoist_joint lowers STAND_HOIST_LOWER_M; the module's pads meet
+           the AMR's pads and the electromagnets lock (two-point lock)
+        4. the hoist releases and rises STAND_HOIST_RAISE_M clear of the
+           module; the AMR drives out forward carrying it
+
+    STAND FRAME = the docked AMR frame: origin on the floor under the AMR
+    centre, +X = the docked AMR's heading (the open side it reverses in
+    from and drives out of).
+
+    Clearances: legs' inner faces at |y| = 0.46 m vs the AMR's 0.31 m
+    half-width; hoist rods end at z = 0.45 m, above everything on the AMR
+    except the sensor mast, which never passes under them.
+-->
+
+<robot name="arm_station_stand">
+
+    <material name="stand_yellow"><color rgba="0.95 0.78 0.05 1"/></material>
+    <material name="stand_dark"><color rgba="0.15 0.15 0.17 1"/></material>
+    <material name="hoist_grey"><color rgba="0.60 0.62 0.65 1"/></material>
+
+    <link name="stand_base_link">
+
+        <!-- four legs -->
+        <visual><origin xyz="0.40 0.50 0.85"/><geometry><box size="0.08 0.08 1.70"/></geometry><material name="stand_yellow"/></visual>
+        <collision><origin xyz="0.40 0.50 0.85"/><geometry><box size="0.08 0.08 1.70"/></geometry></collision>
+        <visual><origin xyz="0.40 -0.50 0.85"/><geometry><box size="0.08 0.08 1.70"/></geometry><material name="stand_yellow"/></visual>
+        <collision><origin xyz="0.40 -0.50 0.85"/><geometry><box size="0.08 0.08 1.70"/></geometry></collision>
+        <visual><origin xyz="-0.40 0.50 0.85"/><geometry><box size="0.08 0.08 1.70"/></geometry><material name="stand_yellow"/></visual>
+        <collision><origin xyz="-0.40 0.50 0.85"/><geometry><box size="0.08 0.08 1.70"/></geometry></collision>
+        <visual><origin xyz="-0.40 -0.50 0.85"/><geometry><box size="0.08 0.08 1.70"/></geometry><material name="stand_yellow"/></visual>
+        <collision><origin xyz="-0.40 -0.50 0.85"/><geometry><box size="0.08 0.08 1.70"/></geometry></collision>
+
+        <!-- top frame: cross beams along y, side beams along x -->
+        <visual><origin xyz="0.40 0 1.66"/><geometry><box size="0.08 1.08 0.08"/></geometry><material name="stand_yellow"/></visual>
+        <collision><origin xyz="0.40 0 1.66"/><geometry><box size="0.08 1.08 0.08"/></geometry></collision>
+        <visual><origin xyz="-0.40 0 1.66"/><geometry><box size="0.08 1.08 0.08"/></geometry><material name="stand_yellow"/></visual>
+        <collision><origin xyz="-0.40 0 1.66"/><geometry><box size="0.08 1.08 0.08"/></geometry></collision>
+        <visual><origin xyz="0 0.50 1.66"/><geometry><box size="0.88 0.08 0.08"/></geometry><material name="stand_yellow"/></visual>
+        <collision><origin xyz="0 0.50 1.66"/><geometry><box size="0.88 0.08 0.08"/></geometry></collision>
+        <visual><origin xyz="0 -0.50 1.66"/><geometry><box size="0.88 0.08 0.08"/></geometry><material name="stand_yellow"/></visual>
+        <collision><origin xyz="0 -0.50 1.66"/><geometry><box size="0.88 0.08 0.08"/></geometry></collision>
+
+        <!-- hoist guide beam + winch housing over the carriage -->
+        <visual><origin xyz="-0.11 0 1.66"/><geometry><box size="0.10 1.00 0.06"/></geometry><material name="stand_dark"/></visual>
+        <visual><origin xyz="-0.11 0 1.73"/><geometry><box size="0.16 0.20 0.08"/></geometry><material name="stand_dark"/></visual>
+
+        <!-- foot plates -->
+        <visual><origin xyz="0.40 0.50 0.01"/><geometry><box size="0.16 0.16 0.02"/></geometry><material name="stand_dark"/></visual>
+        <visual><origin xyz="0.40 -0.50 0.01"/><geometry><box size="0.16 0.16 0.02"/></geometry><material name="stand_dark"/></visual>
+        <visual><origin xyz="-0.40 0.50 0.01"/><geometry><box size="0.16 0.16 0.02"/></geometry><material name="stand_dark"/></visual>
+        <visual><origin xyz="-0.40 -0.50 0.01"/><geometry><box size="0.16 0.16 0.02"/></geometry><material name="stand_dark"/></visual>
+
+        <inertial>
+            <origin xyz="0 0 0.85"/>
+            <mass value="60.0"/>
+            <inertia ixx="20" ixy="0" ixz="0" iyy="20" iyz="0" izz="10"/>
+        </inertial>
+    </link>
+
+    <!-- ================================================== -->
+    <!-- HOIST CARRIAGE (prismatic, lowers / lifts module)  -->
+    <!-- ================================================== -->
+    <!-- Joint zero = holding height: carriage bar at z = 1.32 m, rods
+         reaching down to the module lugs (z = 0.45 m). -->
+
+    <link name="hoist_carriage_link">
+        <visual><geometry><box size="0.08 0.66 0.05"/></geometry><material name="hoist_grey"/></visual>
+        <collision><geometry><box size="0.08 0.66 0.05"/></geometry></collision>
+        <visual><origin xyz="0 0.27 -0.435"/><geometry><box size="0.02 0.02 0.87"/></geometry><material name="hoist_grey"/></visual>
+        <visual><origin xyz="0 -0.27 -0.435"/><geometry><box size="0.02 0.02 0.87"/></geometry><material name="hoist_grey"/></visual>
+        <!-- hooks -->
+        <visual><origin xyz="0 0.27 -0.87"/><geometry><box size="0.07 0.03 0.02"/></geometry><material name="stand_dark"/></visual>
+        <visual><origin xyz="0 -0.27 -0.87"/><geometry><box size="0.07 0.03 0.02"/></geometry><material name="stand_dark"/></visual>
+        <inertial>
+            <mass value="3.0"/>
+            <inertia ixx="0.1" ixy="0" ixz="0" iyy="0.1" iyz="0" izz="0.1"/>
+        </inertial>
+    </link>
+    <joint name="hoist_joint" type="prismatic">
+        <parent link="stand_base_link"/>
+        <child link="hoist_carriage_link"/>
+        <origin xyz="-0.11 0 1.32"/>
+        <axis xyz="0 0 1"/>
+        <limit lower="-0.08" upper="0.30" effort="2000.0" velocity="0.3"/>
+    </joint>
+
+</robot>

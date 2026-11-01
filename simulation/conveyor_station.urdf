@@ -1,0 +1,402 @@
+<?xml version="1.0"?>
+
+<!--
+    LOADING CONVEYOR EXTENSION STATION
+    =====================================
+    A fixed conveyor extension at the SHIPPING dock, used to move goods
+    from an AMR's deck into a parked truck (or the reverse direction,
+    truck to AMR). The AMR docks underneath/alongside the conveyor's
+    intake end the same way it docks under the robotic arm station: two
+    chassis-top electromagnet pads lock onto two magnet pads on the
+    conveyor frame so the conveyor bed and the AMR deck stay level and
+    will not shift apart while goods slide across the join.
+
+    No vertical lift mechanism is modelled (per request - "it's ok if
+    the up/down mechanism is not implemented"). The conveyor bed sits at
+    a fixed height matched to the AMR chassis deck top (world z =~ 0.30 m
+    when the AMR stands on its wheels), so the belt forms a level
+    extension of the AMR's deck once docked.
+
+    DRIVE MECHANISM
+    ========================================================================
+    Two end rollers (infeed_roller_link, outfeed_roller_link) are
+    continuous revolute joints about the belt's lateral (Y) axis. Driving
+    both rollers at the same commanded angular velocity (see
+    conveyor_control.py) is what "moves the belt" - goods resting on the
+    belt surface are carried along by roller-surface contact friction.
+    A thin visual "belt_surface_link" plane sits between the rollers for
+    visual continuity; it is a fixed (non-driven) link, since PyBullet
+    has no native scrolling-texture belt primitive - the physical
+    carrying action comes from the two driven rollers only.
+
+    MAGNET PADS
+    ========================================================================
+    magnet_pad_intake_link / magnet_pad_outfeed_link bracket the conveyor
+    frame at the end nearest the AMR docking point, spaced to match the
+    AMR's own magnet_pad_front_link / magnet_pad_rear_link spacing
+    (amr_robot.urdf), exactly as on robotic_arm_station.urdf.
+-->
+
+<robot name="conveyor_station">
+
+    <!-- ================================================== -->
+    <!-- STATION BASE (bolted to the warehouse floor)       -->
+    <!-- ================================================== -->
+
+    <link name="conveyor_base_link">
+
+        <visual>
+            <origin xyz="0 0 0.02"/>
+            <geometry>
+                <box size="0.90 0.70 0.04"/>
+            </geometry>
+            <material name="base_grey">
+                <color rgba="0.30 0.30 0.32 1"/>
+            </material>
+        </visual>
+
+        <collision>
+            <origin xyz="0 0 0.02"/>
+            <geometry>
+                <box size="0.90 0.70 0.04"/>
+            </geometry>
+        </collision>
+
+        <inertial>
+            <origin xyz="0 0 0.02"/>
+            <mass value="35.0"/>
+            <inertia
+                ixx="1.45"
+                ixy="0"
+                ixz="0"
+                iyy="2.40"
+                iyz="0"
+                izz="3.57"/>
+        </inertial>
+
+    </link>
+
+
+    <!-- ================================================== -->
+    <!-- CONVEYOR FRAME (support legs + bed)                -->
+    <!-- ================================================== -->
+    <!-- Bed length 2.20 m, matched to carry a load clear of the AMR
+         deck and across to the truck opening shown at the SHIPPING dock.
+         Bed top sits at z=0.30 m (world), matching the AMR chassis deck
+         top height so goods transfer across the join without a step. -->
+
+    <link name="conveyor_frame_link">
+
+        <!-- Near support leg (intake end, closest to AMR dock point) -->
+        <visual>
+            <origin xyz="0.15 0.0 0.14"/>
+            <geometry>
+                <box size="0.08 0.60 0.28"/>
+            </geometry>
+            <material name="frame_dark">
+                <color rgba="0.20 0.20 0.22 1"/>
+            </material>
+        </visual>
+        <collision>
+            <origin xyz="0.15 0.0 0.14"/>
+            <geometry>
+                <box size="0.08 0.60 0.28"/>
+            </geometry>
+        </collision>
+
+        <!-- Far support leg (outfeed end, toward the truck) -->
+        <visual>
+            <origin xyz="1.95 0.0 0.14"/>
+            <geometry>
+                <box size="0.08 0.60 0.28"/>
+            </geometry>
+            <material name="frame_dark"/>
+        </visual>
+        <collision>
+            <origin xyz="1.95 0.0 0.14"/>
+            <geometry>
+                <box size="0.08 0.60 0.28"/>
+            </geometry>
+        </collision>
+
+        <!-- Side rails running the length of the bed -->
+        <visual>
+            <origin xyz="1.05 0.32 0.30"/>
+            <geometry>
+                <box size="2.10 0.03 0.06"/>
+            </geometry>
+            <material name="frame_dark"/>
+        </visual>
+        <collision>
+            <origin xyz="1.05 0.32 0.30"/>
+            <geometry>
+                <box size="2.10 0.03 0.06"/>
+            </geometry>
+        </collision>
+
+        <visual>
+            <origin xyz="1.05 -0.32 0.30"/>
+            <geometry>
+                <box size="2.10 0.03 0.06"/>
+            </geometry>
+            <material name="frame_dark"/>
+        </visual>
+        <collision>
+            <origin xyz="1.05 -0.32 0.30"/>
+            <geometry>
+                <box size="2.10 0.03 0.06"/>
+            </geometry>
+        </collision>
+
+        <inertial>
+            <origin xyz="1.05 0 0.2"/>
+            <mass value="18.0"/>
+            <inertia
+                ixx="0.62"
+                ixy="0"
+                ixz="0"
+                iyy="6.80"
+                iyz="0"
+                izz="6.45"/>
+        </inertial>
+
+    </link>
+
+    <joint name="conveyor_frame_joint" type="fixed">
+        <parent link="conveyor_base_link"/>
+        <child link="conveyor_frame_link"/>
+        <!-- Base pad sits under the intake end; the frame extends +X
+             away from the AMR dock point toward the truck. -->
+        <origin xyz="-0.25 0.0 0.04"/>
+    </joint>
+
+
+    <!-- ================================================== -->
+    <!-- BELT SURFACE (visual only, fixed, spans the rollers) -->
+    <!-- ================================================== -->
+
+    <link name="belt_surface_link">
+
+        <visual>
+            <origin xyz="0 0 0"/>
+            <geometry>
+                <box size="1.86 0.56 0.02"/>
+            </geometry>
+            <material name="belt_black">
+                <color rgba="0.12 0.12 0.12 1"/>
+            </material>
+        </visual>
+
+        <collision>
+            <origin xyz="0 0 0"/>
+            <geometry>
+                <box size="1.86 0.56 0.02"/>
+            </geometry>
+        </collision>
+
+        <inertial>
+            <mass value="2.0"/>
+            <inertia
+                ixx="0.052"
+                ixy="0"
+                ixz="0"
+                iyy="0.580"
+                iyz="0"
+                izz="0.627"/>
+        </inertial>
+
+    </link>
+
+    <joint name="belt_surface_joint" type="fixed">
+        <parent link="conveyor_frame_link"/>
+        <child link="belt_surface_link"/>
+        <origin xyz="1.05 0.0 0.29"/>
+    </joint>
+
+
+    <!-- ================================================== -->
+    <!-- INFEED ROLLER (driven, AMR / intake end)           -->
+    <!-- ================================================== -->
+    <!-- Commanding this joint's velocity is "move the conveyor"; see
+         conveyor_control.py (FORWARD/BACKWARD/STOP + arbitrary speed). -->
+
+    <link name="infeed_roller_link">
+
+        <visual>
+            <origin rpy="1.5708 0 0"/>
+            <geometry>
+                <cylinder radius="0.045" length="0.60"/>
+            </geometry>
+            <material name="roller_grey">
+                <color rgba="0.45 0.45 0.48 1"/>
+            </material>
+        </visual>
+
+        <collision>
+            <origin rpy="1.5708 0 0"/>
+            <geometry>
+                <cylinder radius="0.045" length="0.60"/>
+            </geometry>
+        </collision>
+
+        <inertial>
+            <mass value="1.2"/>
+            <inertia
+                ixx="0.0019"
+                ixy="0"
+                ixz="0"
+                iyy="0.0019"
+                iyz="0"
+                izz="0.0012"/>
+        </inertial>
+
+    </link>
+
+    <joint name="infeed_roller_joint" type="continuous">
+        <parent link="conveyor_frame_link"/>
+        <child link="infeed_roller_link"/>
+        <origin xyz="0.15 0.0 0.29"/>
+        <axis xyz="0 1 0"/>
+    </joint>
+
+
+    <!-- ================================================== -->
+    <!-- OUTFEED ROLLER (driven, truck / discharge end)     -->
+    <!-- ================================================== -->
+
+    <link name="outfeed_roller_link">
+
+        <visual>
+            <origin rpy="1.5708 0 0"/>
+            <geometry>
+                <cylinder radius="0.045" length="0.60"/>
+            </geometry>
+            <material name="roller_grey"/>
+        </visual>
+
+        <collision>
+            <origin rpy="1.5708 0 0"/>
+            <geometry>
+                <cylinder radius="0.045" length="0.60"/>
+            </geometry>
+        </collision>
+
+        <inertial>
+            <mass value="1.2"/>
+            <inertia
+                ixx="0.0019"
+                ixy="0"
+                ixz="0"
+                iyy="0.0019"
+                iyz="0"
+                izz="0.0012"/>
+        </inertial>
+
+    </link>
+
+    <joint name="outfeed_roller_joint" type="continuous">
+        <parent link="conveyor_frame_link"/>
+        <child link="outfeed_roller_link"/>
+        <origin xyz="1.95 0.0 0.29"/>
+        <axis xyz="0 1 0"/>
+    </joint>
+
+
+    <!-- ================================================== -->
+    <!-- MAGNET PAD - INTAKE END (docks to AMR front pad)   -->
+    <!-- ================================================== -->
+
+    <link name="magnet_pad_intake_link">
+
+        <visual>
+            <origin xyz="0 0 0"/>
+            <geometry>
+                <cylinder radius="0.05" length="0.02"/>
+            </geometry>
+            <material name="magnet_silver">
+                <color rgba="0.75 0.75 0.78 1"/>
+            </material>
+        </visual>
+
+        <collision>
+            <origin xyz="0 0 0"/>
+            <geometry>
+                <cylinder radius="0.05" length="0.02"/>
+            </geometry>
+        </collision>
+
+        <inertial>
+            <mass value="0.4"/>
+            <inertia
+                ixx="0.0003"
+                ixy="0"
+                ixz="0"
+                iyy="0.0003"
+                iyz="0"
+                izz="0.0005"/>
+        </inertial>
+
+    </link>
+
+    <joint name="magnet_pad_intake_joint" type="fixed">
+        <parent link="conveyor_frame_link"/>
+        <child link="magnet_pad_intake_link"/>
+        <!-- conveyor_frame_joint already shifts conveyor_frame_link by
+             -0.25 m relative to conveyor_base_link, so this pad is
+             placed at local x=0.50 here to land at x=+0.25 relative to
+             the station's own base origin - symmetric with the
+             outfeed pad at x=-0.25, and matching the AMR's own
+             magnet_pad_front_link / magnet_pad_rear_link spacing
+             (amr_robot.urdf) so both pads land under their AMR
+             counterpart when the AMR is centred on the station base. -->
+        <origin xyz="0.50 0.0 0.30"/>
+    </joint>
+
+
+    <!-- ================================================== -->
+    <!-- MAGNET PAD - OUTFEED-SIDE (docks to AMR rear pad)  -->
+    <!-- ================================================== -->
+    <!-- Second contact point along the same intake end (not at the far
+         outfeed end of the conveyor) so both magnet pads engage the
+         same AMR, one on its front pad and one on its rear pad, rather
+         than trying to span the full 2.2 m conveyor length. -->
+
+    <link name="magnet_pad_outfeed_link">
+
+        <visual>
+            <origin xyz="0 0 0"/>
+            <geometry>
+                <cylinder radius="0.05" length="0.02"/>
+            </geometry>
+            <material name="magnet_silver"/>
+        </visual>
+
+        <collision>
+            <origin xyz="0 0 0"/>
+            <geometry>
+                <cylinder radius="0.05" length="0.02"/>
+            </geometry>
+        </collision>
+
+        <inertial>
+            <mass value="0.4"/>
+            <inertia
+                ixx="0.0003"
+                ixy="0"
+                ixz="0"
+                iyy="0.0003"
+                iyz="0"
+                izz="0.0005"/>
+        </inertial>
+
+    </link>
+
+    <joint name="magnet_pad_outfeed_joint" type="fixed">
+        <parent link="conveyor_frame_link"/>
+        <child link="magnet_pad_outfeed_link"/>
+        <!-- Lands at local x=-0.25 relative to the station base origin,
+             see magnet_pad_intake_joint's comment above. -->
+        <origin xyz="0.0 0.0 0.30"/>
+    </joint>
+
+</robot>

@@ -1,0 +1,378 @@
+<?xml version="1.0"?>
+
+<!--
+    SWAPPABLE SUCTION-ARM MODULE (rides on the AMR deck)
+    =====================================================
+    A tool module the AMR collects from the arm-module stand at the
+    PICKING dock (arm_station_stand.urdf) when the boxes it found need a
+    suction-gripper arm. It sits on the rear/centre of the AMR deck,
+    behind the sensor mast, and is locked down by two electromagnet pads
+    (magnet_pad_rear_link / magnet_pad_mid_link) mating with the AMR's
+    pads of the same names (see amr_robot.urdf).
+
+    MODULE FRAME
+        origin = plate underside, directly above the AMR centre when
+        docked; x forward / y left / z up, i.e. the AMR base axes.
+
+    PARTS
+        module_base_link   0.50 x 0.60 x 0.03 plate (x from -0.36 to
+                           +0.14), the arm column, the cargo tray lips
+                           and two hoist lugs
+        cargo tray         behind the column: 2 slots per layer x 2
+                           layers for 0.16 m boxes (mission_config
+                           CARGO_SLOT_XY)
+        6-DOF arm          UR-style chain, same joint names as
+                           robotic_arm_station.urdf so arm_control.py
+                           still applies:
+            shoulder_pan (Z) -> shoulder_lift (Y) -> elbow (Y)
+            -> wrist_1 (Y) -> wrist_2 (Z) -> wrist_3 (X) -> tool_flange
+        suction_cup_link   vacuum cup along tool +X, lip 0.11 m from
+                           the flange origin
+        arm_stereo_camera_link  eye-in-hand stereo pair on the flange,
+                           looking along tool +X, baseline along flange Y
+
+    Kinematic constants here MUST match mission_config.py (ARM_*), which
+    arm_manipulator.py uses for its own FK/IK; its self-test checks the
+    two agree with PyBullet's link poses.
+-->
+
+<robot name="suction_arm_module">
+
+    <material name="module_grey"><color rgba="0.35 0.37 0.40 1"/></material>
+    <material name="tray_black"><color rgba="0.12 0.12 0.13 1"/></material>
+    <material name="arm_orange"><color rgba="0.95 0.50 0.08 1"/></material>
+    <material name="wrist_grey"><color rgba="0.55 0.55 0.58 1"/></material>
+    <material name="magnet_silver"><color rgba="0.75 0.75 0.78 1"/></material>
+    <material name="cup_blue"><color rgba="0.15 0.35 0.85 1"/></material>
+    <material name="camera_black"><color rgba="0.05 0.05 0.05 1"/></material>
+
+    <!-- ================================================== -->
+    <!-- MODULE BASE: plate + column + tray lips + lugs     -->
+    <!-- ================================================== -->
+
+    <link name="module_base_link">
+
+        <!-- plate -->
+        <visual>
+            <origin xyz="-0.11 0 0.015"/>
+            <geometry><box size="0.50 0.60 0.03"/></geometry>
+            <material name="module_grey"/>
+        </visual>
+        <collision>
+            <origin xyz="-0.11 0 0.015"/>
+            <geometry><box size="0.50 0.60 0.03"/></geometry>
+        </collision>
+
+        <!-- arm column -->
+        <visual>
+            <origin xyz="0.02 0 0.14"/>
+            <geometry><cylinder radius="0.06" length="0.22"/></geometry>
+            <material name="arm_orange"/>
+        </visual>
+        <collision>
+            <origin xyz="0.02 0 0.14"/>
+            <geometry><cylinder radius="0.06" length="0.22"/></geometry>
+        </collision>
+
+        <!-- cargo tray lips (back, left, right, front) -->
+        <visual>
+            <origin xyz="-0.345 0 0.05"/>
+            <geometry><box size="0.01 0.42 0.04"/></geometry>
+            <material name="tray_black"/>
+        </visual>
+        <collision>
+            <origin xyz="-0.345 0 0.05"/>
+            <geometry><box size="0.01 0.42 0.04"/></geometry>
+        </collision>
+        <visual>
+            <origin xyz="-0.22 0.205 0.05"/>
+            <geometry><box size="0.26 0.01 0.04"/></geometry>
+            <material name="tray_black"/>
+        </visual>
+        <collision>
+            <origin xyz="-0.22 0.205 0.05"/>
+            <geometry><box size="0.26 0.01 0.04"/></geometry>
+        </collision>
+        <visual>
+            <origin xyz="-0.22 -0.205 0.05"/>
+            <geometry><box size="0.26 0.01 0.04"/></geometry>
+            <material name="tray_black"/>
+        </visual>
+        <collision>
+            <origin xyz="-0.22 -0.205 0.05"/>
+            <geometry><box size="0.26 0.01 0.04"/></geometry>
+        </collision>
+        <visual>
+            <origin xyz="-0.095 0 0.05"/>
+            <geometry><box size="0.01 0.42 0.04"/></geometry>
+            <material name="tray_black"/>
+        </visual>
+        <collision>
+            <origin xyz="-0.095 0 0.05"/>
+            <geometry><box size="0.01 0.42 0.04"/></geometry>
+        </collision>
+
+        <!-- hoist lugs (the stand's hoist rods hook onto these) -->
+        <visual>
+            <origin xyz="-0.11 0.27 0.05"/>
+            <geometry><box size="0.06 0.04 0.04"/></geometry>
+            <material name="magnet_silver"/>
+        </visual>
+        <visual>
+            <origin xyz="-0.11 -0.27 0.05"/>
+            <geometry><box size="0.06 0.04 0.04"/></geometry>
+            <material name="magnet_silver"/>
+        </visual>
+
+        <inertial>
+            <origin xyz="-0.08 0 0.04"/>
+            <mass value="5.0"/>
+            <inertia ixx="0.15" ixy="0" ixz="0" iyy="0.11" iyz="0" izz="0.25"/>
+        </inertial>
+    </link>
+
+    <!-- ================================================== -->
+    <!-- MAGNET PADS (underside, mate with the AMR's pads)  -->
+    <!-- ================================================== -->
+
+    <link name="magnet_pad_rear_link">
+        <visual>
+            <geometry><cylinder radius="0.05" length="0.02"/></geometry>
+            <material name="magnet_silver"/>
+        </visual>
+        <inertial>
+            <mass value="0.2"/>
+            <inertia ixx="0.0001" ixy="0" ixz="0" iyy="0.0001" iyz="0" izz="0.0002"/>
+        </inertial>
+    </link>
+    <joint name="magnet_pad_rear_joint" type="fixed">
+        <parent link="module_base_link"/>
+        <child link="magnet_pad_rear_link"/>
+        <origin xyz="-0.25 0 -0.01"/>
+    </joint>
+
+    <link name="magnet_pad_mid_link">
+        <visual>
+            <geometry><cylinder radius="0.05" length="0.02"/></geometry>
+            <material name="magnet_silver"/>
+        </visual>
+        <inertial>
+            <mass value="0.2"/>
+            <inertia ixx="0.0001" ixy="0" ixz="0" iyy="0.0001" iyz="0" izz="0.0002"/>
+        </inertial>
+    </link>
+    <joint name="magnet_pad_mid_joint" type="fixed">
+        <parent link="module_base_link"/>
+        <child link="magnet_pad_mid_link"/>
+        <origin xyz="0.05 0 -0.01"/>
+    </joint>
+
+    <!-- ================================================== -->
+    <!-- JOINT 1 - SHOULDER PAN                             -->
+    <!-- ================================================== -->
+
+    <link name="shoulder_link">
+        <visual>
+            <origin xyz="0 0 0.03"/>
+            <geometry><cylinder radius="0.055" length="0.10"/></geometry>
+            <material name="arm_orange"/>
+        </visual>
+        <collision>
+            <origin xyz="0 0 0.03"/>
+            <geometry><cylinder radius="0.055" length="0.10"/></geometry>
+        </collision>
+        <inertial>
+            <origin xyz="0 0 0.03"/>
+            <mass value="1.2"/>
+            <inertia ixx="0.002" ixy="0" ixz="0" iyy="0.002" iyz="0" izz="0.002"/>
+        </inertial>
+    </link>
+    <joint name="shoulder_pan_joint" type="revolute">
+        <parent link="module_base_link"/>
+        <child link="shoulder_link"/>
+        <origin xyz="0.02 0 0.25"/>
+        <axis xyz="0 0 1"/>
+        <limit lower="-3.14159" upper="3.14159" effort="80.0" velocity="2.0"/>
+    </joint>
+
+    <!-- ================================================== -->
+    <!-- JOINT 2 - SHOULDER LIFT                            -->
+    <!-- ================================================== -->
+
+    <link name="upper_arm_link">
+        <visual>
+            <origin xyz="0.25 0 0" rpy="0 1.5708 0"/>
+            <geometry><cylinder radius="0.04" length="0.50"/></geometry>
+            <material name="arm_orange"/>
+        </visual>
+        <collision>
+            <origin xyz="0.25 0 0" rpy="0 1.5708 0"/>
+            <geometry><cylinder radius="0.04" length="0.46"/></geometry>
+        </collision>
+        <inertial>
+            <origin xyz="0.25 0 0"/>
+            <mass value="1.5"/>
+            <inertia ixx="0.0012" ixy="0" ixz="0" iyy="0.032" iyz="0" izz="0.032"/>
+        </inertial>
+    </link>
+    <joint name="shoulder_lift_joint" type="revolute">
+        <parent link="shoulder_link"/>
+        <child link="upper_arm_link"/>
+        <origin xyz="0 0 0.06"/>
+        <axis xyz="0 1 0"/>
+        <limit lower="-3.14159" upper="3.14159" effort="80.0" velocity="2.0"/>
+    </joint>
+
+    <!-- ================================================== -->
+    <!-- JOINT 3 - ELBOW                                    -->
+    <!-- ================================================== -->
+
+    <link name="forearm_link">
+        <visual>
+            <origin xyz="0.225 0 0" rpy="0 1.5708 0"/>
+            <geometry><cylinder radius="0.033" length="0.45"/></geometry>
+            <material name="arm_orange"/>
+        </visual>
+        <collision>
+            <origin xyz="0.225 0 0" rpy="0 1.5708 0"/>
+            <geometry><cylinder radius="0.033" length="0.41"/></geometry>
+        </collision>
+        <inertial>
+            <origin xyz="0.225 0 0"/>
+            <mass value="1.0"/>
+            <inertia ixx="0.0006" ixy="0" ixz="0" iyy="0.017" iyz="0" izz="0.017"/>
+        </inertial>
+    </link>
+    <joint name="elbow_joint" type="revolute">
+        <parent link="upper_arm_link"/>
+        <child link="forearm_link"/>
+        <origin xyz="0.50 0 0"/>
+        <axis xyz="0 1 0"/>
+        <limit lower="-2.95" upper="2.95" effort="60.0" velocity="2.5"/>
+    </joint>
+
+    <!-- ================================================== -->
+    <!-- JOINT 4 - WRIST 1                                  -->
+    <!-- ================================================== -->
+
+    <link name="wrist_1_link">
+        <visual>
+            <origin xyz="0.04 0 0" rpy="0 1.5708 0"/>
+            <geometry><cylinder radius="0.03" length="0.08"/></geometry>
+            <material name="wrist_grey"/>
+        </visual>
+        <inertial>
+            <origin xyz="0.04 0 0"/>
+            <mass value="0.4"/>
+            <inertia ixx="0.0002" ixy="0" ixz="0" iyy="0.0004" iyz="0" izz="0.0004"/>
+        </inertial>
+    </link>
+    <joint name="wrist_1_joint" type="revolute">
+        <parent link="forearm_link"/>
+        <child link="wrist_1_link"/>
+        <origin xyz="0.45 0 0"/>
+        <axis xyz="0 1 0"/>
+        <limit lower="-3.14159" upper="3.14159" effort="30.0" velocity="3.0"/>
+    </joint>
+
+    <!-- ================================================== -->
+    <!-- JOINT 5 - WRIST 2                                  -->
+    <!-- ================================================== -->
+
+    <link name="wrist_2_link">
+        <visual>
+            <origin xyz="0.035 0 0" rpy="0 1.5708 0"/>
+            <geometry><cylinder radius="0.028" length="0.07"/></geometry>
+            <material name="wrist_grey"/>
+        </visual>
+        <inertial>
+            <origin xyz="0.035 0 0"/>
+            <mass value="0.3"/>
+            <inertia ixx="0.0001" ixy="0" ixz="0" iyy="0.0002" iyz="0" izz="0.0002"/>
+        </inertial>
+    </link>
+    <joint name="wrist_2_joint" type="revolute">
+        <parent link="wrist_1_link"/>
+        <child link="wrist_2_link"/>
+        <origin xyz="0.08 0 0"/>
+        <axis xyz="0 0 1"/>
+        <limit lower="-3.14159" upper="3.14159" effort="30.0" velocity="3.0"/>
+    </joint>
+
+    <!-- ================================================== -->
+    <!-- JOINT 6 - WRIST 3 (tool roll)                      -->
+    <!-- ================================================== -->
+
+    <link name="tool_flange_link">
+        <visual>
+            <origin xyz="0.005 0 0" rpy="0 1.5708 0"/>
+            <geometry><cylinder radius="0.035" length="0.01"/></geometry>
+            <material name="camera_black"/>
+        </visual>
+        <inertial>
+            <mass value="0.2"/>
+            <inertia ixx="0.0001" ixy="0" ixz="0" iyy="0.0001" iyz="0" izz="0.0001"/>
+        </inertial>
+    </link>
+    <joint name="wrist_3_joint" type="revolute">
+        <parent link="wrist_2_link"/>
+        <child link="tool_flange_link"/>
+        <origin xyz="0.07 0 0"/>
+        <axis xyz="1 0 0"/>
+        <limit lower="-3.14159" upper="3.14159" effort="20.0" velocity="3.0"/>
+    </joint>
+
+    <!-- ================================================== -->
+    <!-- SUCTION CUP (vacuum gripper)                       -->
+    <!-- ================================================== -->
+
+    <link name="suction_cup_link">
+        <!-- stem -->
+        <visual>
+            <origin xyz="0.045 0 0" rpy="0 1.5708 0"/>
+            <geometry><cylinder radius="0.012" length="0.09"/></geometry>
+            <material name="wrist_grey"/>
+        </visual>
+        <!-- bellows cup, lip at x = 0.11 -->
+        <visual>
+            <origin xyz="0.10 0 0" rpy="0 1.5708 0"/>
+            <geometry><cylinder radius="0.028" length="0.02"/></geometry>
+            <material name="cup_blue"/>
+        </visual>
+        <collision>
+            <origin xyz="0.10 0 0" rpy="0 1.5708 0"/>
+            <geometry><cylinder radius="0.028" length="0.02"/></geometry>
+        </collision>
+        <inertial>
+            <origin xyz="0.07 0 0"/>
+            <mass value="0.1"/>
+            <inertia ixx="0.00002" ixy="0" ixz="0" iyy="0.00005" iyz="0" izz="0.00005"/>
+        </inertial>
+    </link>
+    <joint name="suction_cup_joint" type="fixed">
+        <parent link="tool_flange_link"/>
+        <child link="suction_cup_link"/>
+        <origin xyz="0 0 0"/>
+    </joint>
+
+    <!-- ================================================== -->
+    <!-- EYE-IN-HAND STEREO CAMERA                          -->
+    <!-- ================================================== -->
+
+    <link name="arm_stereo_camera_link">
+        <visual>
+            <geometry><box size="0.03 0.10 0.03"/></geometry>
+            <material name="camera_black"/>
+        </visual>
+        <inertial>
+            <mass value="0.06"/>
+            <inertia ixx="0.00005" ixy="0" ixz="0" iyy="0.00001" iyz="0" izz="0.00005"/>
+        </inertial>
+    </link>
+    <joint name="arm_stereo_camera_joint" type="fixed">
+        <parent link="tool_flange_link"/>
+        <child link="arm_stereo_camera_link"/>
+        <origin xyz="0.03 0 0.07"/>
+    </joint>
+
+</robot>
