@@ -63,6 +63,12 @@ PLANNER_UNKNOWN_OBSTACLE_GUARD_CELLS = 2
 # (an obstacle on it) or the goal itself is off the lane.
 LANE_UNKNOWN_COST_MULTIPLIER = 60.0
 LANE_OFF_COST_MULTIPLIER = 60.0
+# Squeeze penalty: in the band just outside the hard clearance the route
+# would pass an obstacle with only centimetres to spare - legal for A* but
+# rejected by the local planner's corridor check. Cost there ramps up to
+# the off-lane cost, so the route steps a cell or two off the lane to pass
+# an obstacle with real clearance instead of shaving it to stay on paint.
+PLANNER_SQUEEZE_BAND_M = 0.20
 PLANNER_SNAP_RADIUS_CELLS = 15
 
 
@@ -100,6 +106,8 @@ class PlannerView:
         cost[unknown] *= PLANNER_UNKNOWN_COST_MULTIPLIER
         cost[~lane & ~non_lane] *= LANE_UNKNOWN_COST_MULTIPLIER
         cost[non_lane] *= LANE_OFF_COST_MULTIPLIER
+        squeeze = np.clip(1.0 - (clearance - hard) / PLANNER_SQUEEZE_BAND_M, 0.0, 1.0)
+        cost += (LANE_OFF_COST_MULTIPLIER * squeeze).astype(np.float32)
         cost[blocked] = np.inf
 
         self.occupied = occupied

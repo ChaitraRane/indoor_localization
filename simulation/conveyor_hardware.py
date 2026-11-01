@@ -19,8 +19,9 @@ the AMR carries for boxes too big for the suction arm.
               the robot itself is in the beam.
     ToF       rear-facing range sensor under the nose: distance to the
               first surface behind the nose (a shelf edge), or None.
-    contact   belt-surface contact sensing (the "touch" when the lifting
-              belt meets the underside of the box).
+    load cell belt-surface load sensing: only contacts pressing DOWN on the
+              belt count (the "touch" when the lifting belt meets the
+              underside of the box), not side brushes against a shelf face.
 
 All sensor readings come from ray casts / contacts against the physical
 scene - the same information real IR, ToF and load sensing would give.
@@ -123,7 +124,12 @@ class ConveyorHardware:
     def ir_blocked(self, which):
         x = cfg.CONV_IR_NOSE_X_M if which == "nose" else cfg.CONV_IR_END_X_M
         z = cfg.CONV_IR_HEIGHT_M
-        return self._ray_hit((x, 0.29, z), (x, -0.29, z)) is not None
+        # Emitter/receiver pair across the belt between the side rails. The
+        # beam is tested from both rails: a ray that STARTS inside a body
+        # does not report it, and a box riding against one rail covers that
+        # rail's end of the beam.
+        return (self._ray_hit((x, 0.30, z), (x, -0.30, z)) is not None
+                or self._ray_hit((x, -0.30, z), (x, 0.30, z)) is not None)
 
     def tof_range(self):
         x, dz = cfg.CONV_TOF_X_M, cfg.CONV_TOF_DZ_M

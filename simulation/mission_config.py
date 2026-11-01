@@ -360,6 +360,12 @@ LANE_NETWORK = [
     [(X_CORRIDOR, Y_AISLE), (PICK_PARK_X, Y_AISLE)],
 ]
 
+# The lane layout is DEFINED infrastructure: the robot is given the painted
+# lane centrelines (above) as its lane layer from the start, so A* keeps to
+# the lane from the very first route. Obstacles, stations, stock and the
+# truck are still found and pinned live.
+LANE_MAP_DEFINED = True
+
 # HSV thresholds for the bright yellow lane paint (centre RGB camera).
 # Saturation is the separating feature: the LOADING/UNLOADING bay marker
 # renders opaque at HSV ~(22, 202, 227) - the renderer ignores its alpha -

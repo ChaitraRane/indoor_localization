@@ -71,8 +71,30 @@ class OccupancyMap:
         self.revision = 0
         self.lane_revision = 0
         self.integrations = 0
+        if cfg.LANE_MAP_DEFINED:
+            self.seed_defined_lanes()
 
     # ------------------------------------------------- live lane layer
+
+    def seed_defined_lanes(self):
+        """Load the DEFINED lane layout (cfg.LANE_NETWORK, the painted
+        lane centrelines) into the lane layer: paint cells start as LANE,
+        everything else as NOT-LANE. Obstacles are NOT given - the occupancy
+        layer still starts empty and is built live; the camera keeps voting
+        into this layer on top of the defined layout."""
+
+        paint = np.zeros((cfg.GRID_ROWS, cfg.GRID_COLS), dtype=bool)
+        hw = int(round(cfg.LANE_WIDTH_M / 2 / cfg.GRID_RESOLUTION_M))
+        for poly in cfg.LANE_NETWORK:
+            for (x0, y0), (x1, y1) in zip(poly[:-1], poly[1:]):
+                n = int(max(abs(x1 - x0), abs(y1 - y0)) / (cfg.GRID_RESOLUTION_M / 2)) + 1
+                for t in np.linspace(0.0, 1.0, n):
+                    r, c = cfg.world_to_grid(x0 + t * (x1 - x0), y0 + t * (y1 - y0))
+                    paint[max(r - hw, 0):r + hw + 1, max(c - hw, 0):c + hw + 1] = True
+        self.lane_hits[paint] = 20
+        self.floor_hits[~paint] = 20
+        self.lane_revision += 1
+        self.revision += 1
 
     def integrate_lane(self, lane_mask_img, floor_lut, pose, max_range_m=3.2, stride=2):
         """Vote one centre-camera frame into the lane layer. floor_lut is
@@ -379,7 +401,8 @@ def main():
     print("-" * 50)
 
     occ = OccupancyMap()
-    assert not occ.lane_mask.any(), "the map must start with NO lane knowledge"
+    assert occ.lane_mask.any() == cfg.LANE_MAP_DEFINED
+    occ.lane_hits[:] = 0; occ.floor_hits[:] = 0; occ.lane_revision += 1
     # Synthetic lane frame: a 0.6 m strip straight ahead in the floor LUT.
     from visual_odometry import Pose2D
     fwd, lat = np.meshgrid(np.linspace(0.6, 3.0, 60), np.linspace(-1.0, 1.0, 80), indexing="ij")

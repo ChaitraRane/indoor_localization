@@ -41,6 +41,7 @@ import pybullet_data
 import camera_rig
 import magnetic_docking
 import mission_config as cfg
+import video_overlay as vid
 import warehouse_environment as warehouse
 from arm_manipulator import ArmHardware, ArmStereoCamera, CargoLatches, SuctionGripper
 from conveyor_hardware import ConveyorHardware
@@ -243,6 +244,11 @@ class RobotIO:
         return {"left_bgr": lb, "left_depth": ld, "right_bgr": rb, "right_depth": rd,
                 "center_bgr": cb}
 
+    def render_camera(self, which, width, height):
+        """Display-resolution render of one robot camera (video only)."""
+
+        return self._render(which, width, height)[0]
+
     def render_front_camera_display(self):
         return self._render("left", camera_rig.DISPLAY_RGBD_WIDTH, camera_rig.DISPLAY_RGBD_HEIGHT)
 
@@ -402,8 +408,8 @@ def setup(headless):
 # VIDEO / LIVE DISPLAY
 # ============================================================
 
-VIDEO_WIDTH = 960
-VIDEO_HEIGHT = 540
+VIDEO_WIDTH = vid.VIDEO_WIDTH
+VIDEO_HEIGHT = vid.VIDEO_HEIGHT
 VIDEO_FPS = 20
 VIDEO_TICK_STRIDE = 3            # one frame per 3 control ticks -> 3x real time
 
@@ -481,73 +487,85 @@ def arm_camera_panel(controller, width, height):
     return _label_panel(left, f"ARM STEREO (left + disparity) | {controller.arm.status}")
 
 
-def build_video_frame(io, controller, status):
-    in_arm = status["state"] in ARM_STATES
-    near_station = status["state"] in ("TURN_FOR_DOCK", "REVERSE_DOCK", "TRANSFER_MODULE", "LEAVE_STATION")
-    target = None
-    if near_station and controller.station_kind:
-        target = cfg.STATIONS[controller.station_kind]["xy"]
+class VideoState:
+    """Per-recording view state (chase-camera smoothing, map zoom window)."""
+
+    def __init__(self):
+        self.chase = vid.ChaseCamera()
+        self.map = vid.MapPanel()
+
+
+def build_video_frame(io, controller, status, vstate):
+    state = status["state"]
+    in_arm = state in ARM_STATES
+    mode, target = "drive", None
+    x, y, yaw = io.true_pose()
+    if state in ("TURN_FOR_DOCK", "REVERSE_DOCK", "TRANSFER_MODULE") and controller.station_kind:
+        mode, target = "close", cfg.STATIONS[controller.station_kind]["xy"]
     if in_arm:
-        x, y, yaw = io.true_pose()
-        target = (x + 0.4 * math.cos(yaw), y + 0.4 * math.sin(yaw))
-    if status["state"] in CONVEYOR_STATES or status["state"] == "TURN_AROUND":
-        x, y, yaw = io.true_pose()
-        target = (x - 0.5 * math.cos(yaw), y - 0.5 * math.sin(yaw))     # the belt nose end
-    overview = io.render_overview(PANEL_W, PANEL_H, close_up_target=target)
-    _label_panel(overview, "CLOSE-UP CAMERA" if target else "OVERVIEW CAMERA")
+        mode, target = "close", (x + 0.4 * math.cos(yaw), y + 0.4 * math.sin(yaw))
+    if state in CONVEYOR_STATES or (state in ("TURN_AROUND", "PULL_AWAY") and io.module_aboard == "CONVEYOR"):
+        mode, target = "conveyor", (x - 0.5 * math.cos(yaw), y - 0.5 * math.sin(yaw))   # belt nose
+    chase = vid.chase_panel(vstate.chase, io, controller, mode, target)
 
     if in_arm:
         second = arm_camera_panel(controller, PANEL_W, PANEL_H)
     else:
-        front, _ = io.render_front_camera_display()
-        second = _label_panel(cv2.resize(front, (PANEL_W, PANEL_H), interpolation=cv2.INTER_AREA),
-                              f"AMR FRONT CAMERA | cmd {io.last_command}")
+        _rgb, depth = io._render("left", 160, 120)
+        second = vid.lane_camera_panel(io, controller, colorize_depth(depth))
 
     pose = controller.pose_estimator.get_pose()
-    occ = controller.occupancy.render(
-        robot_pose=pose, point_a=cfg.POINT_A, path=controller.active_path,
-        output_size=(PANEL_W, PANEL_H),
-        named_points={n: (pt.x, pt.y) for n, pt in controller.semantic.named_points.items()},
-        goal_xy=controller.nav.goal,
-    )
-    _label_panel(occ, f"LIVE OCCUPANCY MAP + A* ROUTE (lane seen {status['lane_visited_frac']*100:.0f}%)")
+    lane = controller._last_lane
+    occ = vid.MapPanel.render(vstate.map, controller, pose, None if lane is None else lane.mask)
+    vid.label(occ, f"LIVE OCCUPANCY MAP (built in real time) + A* ROUTE | robot = estimated pose")
 
     panel = np.full((PANEL_H, PANEL_W, 3), (30, 30, 30), np.uint8)
     px, py, pdeg = status["pose"]
-    gx, gy, gyaw = io.true_pose()
+    gx, gy, _ = io.true_pose()
     lines = [
-        (f"state : {status['state']}", (0, 255, 255), 0.55),
-        (f"nav   : {status['nav']}" if status["nav"] else f"arm   : {status['arm']}", (255, 255, 255), 0.5),
-        (f"pose  : x={px:+.2f} y={py:+.2f} yaw={pdeg:+.0f}", (255, 255, 255), 0.5),
-        (f"est. error vs truth: {math.hypot(px - gx, py - gy)*100:.1f} cm", (180, 180, 180), 0.45),
-        (f"job {status['job']} | module aboard: {io.module_aboard or 'none'} | tray: {io.latches.count}",
-         (0, 255, 0) if io.module_aboard else (200, 200, 200), 0.5),
+        (f"state : {state}", (0, 255, 255), 0.62),
+        (f"nav   : {status['nav']}" if status["nav"] else f"arm   : {status['arm']}", (255, 255, 255), 0.55),
+        (f"drive : {io.last_command}  v={io.last_linear_mps:+.2f} m/s  w={io.last_angular_rps:+.2f} rad/s",
+         (255, 255, 255), 0.5),
+        (f"pose (estimated): x={px:+.2f}  y={py:+.2f}  yaw={pdeg:+.0f} deg", (255, 255, 255), 0.5),
+        (f"est. error vs ground truth: {math.hypot(px - gx, py - gy)*100:.1f} cm", (170, 170, 170), 0.47),
     ]
+    path = controller.active_path
+    if path and len(path) > 1:
+        lines.append((f"A* route: {sum(math.hypot(b[0]-a[0], b[1]-a[1]) for a, b in zip(path[:-1], path[1:])):.1f} m"
+                      f" | lane-first cost (off-lane x60)", (255, 255, 0), 0.47))
+    lines.append((f"job {status['job']} | module aboard: {io.module_aboard or 'none'} | boxes on tray: {io.latches.count}",
+                  (0, 255, 0) if io.module_aboard else (200, 200, 200), 0.5))
     if io.module_aboard == "CONVEYOR":
         c = io.conveyor.status()
         tof = "-" if c["tof"] is None else f"{c['tof']:.3f} m"
         lines.append((f"conveyor: belt top z={c['belt_top'] + cfg.MODULE_DOCKED_Z_M:.3f} m, "
-                      f"belt {c['belt_speed']:+.2f} m/s", (255, 200, 0), 0.45))
+                      f"belt {c['belt_speed']:+.2f} m/s", (255, 200, 0), 0.47))
         lines.append((f"  IR nose {'BLOCKED' if c['ir_nose'] else 'clear'} | IR end "
-                      f"{'BLOCKED' if c['ir_end'] else 'clear'} | ToF {tof}", (255, 200, 0), 0.45))
+                      f"{'BLOCKED' if c['ir_end'] else 'clear'} | ToF {tof}", (255, 200, 0), 0.47))
     d = controller.payload_decision
     if d is not None:
-        lines.append((f"payload: {d.module} ({d.box_count} boxes, {d.max_footprint_m:.2f} m)",
-                      (255, 255, 0), 0.45))
+        lines.append((f"payload decision: {d.module} ({d.box_count} box(es), {d.max_footprint_m:.2f} m)",
+                      (255, 255, 0), 0.47))
+    lines.append(("pinned on the map (found live):", (0, 165, 255), 0.47))
     for name, pt in controller.semantic.named_points.items():
-        lines.append((f"pinned {name}: ({pt.x:+.2f},{pt.y:+.2f})", (0, 165, 255), 0.42))
-    y = 46
-    for text, color, scale in lines[:11]:
-        cv2.putText(panel, text, (10, y), cv2.FONT_HERSHEY_SIMPLEX, scale, color, 1, cv2.LINE_AA)
-        y += 22
-    _label_panel(panel, "MISSION STATUS")
+        lines.append((f"   {name}: ({pt.x:+.2f}, {pt.y:+.2f})", (0, 165, 255), 0.45))
+    yy = 50
+    for text, color, scale in lines:
+        if yy > PANEL_H - vid.CAPTION_H - 6:
+            break
+        cv2.putText(panel, text, (12, yy), cv2.FONT_HERSHEY_SIMPLEX, scale, color, 1, cv2.LINE_AA)
+        yy += 23
+    vid.label(panel, "MISSION STATUS (fully autonomous - no operator commands)")
 
-    frame = np.vstack((np.hstack((overview, second)), np.hstack((occ, panel))))
-    caption = (f"JOB {status['job']} | {status['state']}: "
-               f"{PHASE_CAPTIONS.get(status['state'], '')}   [t={status['t']:.0f} s, 3x speed]")
-    cv2.rectangle(frame, (0, VIDEO_HEIGHT - 24), (VIDEO_WIDTH, VIDEO_HEIGHT), (0, 0, 0), -1)
-    cv2.putText(frame, caption, (8, VIDEO_HEIGHT - 8), cv2.FONT_HERSHEY_SIMPLEX, 0.5,
+    frame = np.vstack((np.hstack((chase, second)), np.hstack((occ, panel))))
+    caption = (f"JOB {status['job']} | {state}: "
+               f"{PHASE_CAPTIONS.get(state, '')}   [t={status['t']:.0f} s, 3x speed]")
+    cv2.rectangle(frame, (0, VIDEO_HEIGHT - 30), (VIDEO_WIDTH, VIDEO_HEIGHT), (0, 0, 0), -1)
+    cv2.putText(frame, caption, (10, VIDEO_HEIGHT - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.62,
                 (255, 255, 255), 1, cv2.LINE_AA)
+    cv2.line(frame, (PANEL_W, 0), (PANEL_W, VIDEO_HEIGHT - 30), (0, 0, 0), 2)
+    cv2.line(frame, (0, PANEL_H), (VIDEO_WIDTH, PANEL_H), (0, 0, 0), 2)
     return frame
 
 
@@ -607,6 +625,7 @@ def run_mission(headless=True, max_control_iters=12000, realtime=False, verbose=
     controller = MissionController(io)
 
     writer = None
+    vstate = VideoState()
     if record_path:
         writer = cv2.VideoWriter(str(record_path), cv2.VideoWriter_fourcc(*"avc1"), VIDEO_FPS,
                                  (VIDEO_WIDTH, VIDEO_HEIGHT))
@@ -646,7 +665,7 @@ def run_mission(headless=True, max_control_iters=12000, realtime=False, verbose=
             follow_camera(io, status)
 
         if writer is not None and status["tick"] % VIDEO_TICK_STRIDE == 0:
-            writer.write(build_video_frame(io, controller, status))
+            writer.write(build_video_frame(io, controller, status, vstate))
         if show_camera_window:
             show_live_windows(io, controller, status)
 
@@ -660,13 +679,13 @@ def run_mission(headless=True, max_control_iters=12000, realtime=False, verbose=
 
     loaded = score_cargo(env, io)
     if writer is not None:
-        final = build_video_frame(io, controller, controller.update())
+        final = build_video_frame(io, controller, controller.update(), vstate)
         ok = controller.state == STATE_COMPLETE
         for _ in range(int(VIDEO_FPS * 3)):
             f = final.copy()
-            cv2.rectangle(f, (0, 0), (f.shape[1], 40), (0, 0, 0), -1)
+            cv2.rectangle(f, (0, 0), (f.shape[1], 46), (0, 0, 0), -1)
             cv2.putText(f, f"{'MISSION COMPLETE' if ok else controller.state}: {loaded} box(es) in the truck",
-                        (12, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0) if ok else (0, 0, 255), 2,
+                        (12, 33), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 255, 0) if ok else (0, 0, 255), 2,
                         cv2.LINE_AA)
             writer.write(f)
         writer.release()
@@ -709,14 +728,22 @@ def run_mission(headless=True, max_control_iters=12000, realtime=False, verbose=
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--headless", action="store_true", help="DIRECT mode, no GUI")
-    parser.add_argument("--max-iters", type=int, default=12000)
+    parser.add_argument("--max-iters", type=int, default=40000)
     parser.add_argument("--realtime", action="store_true", help="throttle to realtime (GUI)")
     parser.add_argument("--record", type=str, default=None, help="record the mission to this MP4")
     parser.add_argument("--show-camera", action="store_true",
                         help="live AMR front RGB/depth (+ arm stereo) windows")
     parser.add_argument("--no-follow", action="store_true",
                         help="GUI: do not move the 3D view camera with the robot")
+    parser.add_argument("--jobs", type=str, default=None,
+                        help="comma-separated stock locations to run, e.g. B (conveyor only)")
     args = parser.parse_args()
+    if args.jobs:
+        wanted = [j.strip().upper() for j in args.jobs.split(",") if j.strip()]
+        cfg.JOBS = [j for j in cfg.JOBS if j["name"] in wanted]
+        if not cfg.JOBS:
+            parser.error(f"--jobs {args.jobs}: no such stock location")
+        print(f"[mission] running only job(s): {', '.join(j['name'] for j in cfg.JOBS)}")
 
     success = run_mission(
         headless=args.headless, max_control_iters=args.max_iters,
