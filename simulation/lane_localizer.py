@@ -21,7 +21,13 @@ run parallel to the building walls (along world X or world Y).
 
 Heading is what makes odometry drift sideways, so this keeps the estimate
 honest between the landmark fixes (tool stands, trailer, table / shelf
-depth-servo) without any prior map. Position is not corrected here.
+depth-servo) without any prior map.
+    4. When the lane layout is DEFINED map data (cfg.LANE_MAP_DEFINED), the
+       same fit also fixes the LATERAL position: the strip seen a metres to
+       the side must be the surveyed centreline of the lane segment the
+       robot is driving along, so the estimate's cross-lane coordinate is
+       pulled toward (centreline - a). The segment is chosen by direction
+       and extent, and only an unambiguous, small innovation is accepted.
 
 Gates keep the correction from ever doing harm: only a single, straight,
 nearly centred strip (no junctions - a crossing strip breaks the band
@@ -33,6 +39,7 @@ import math
 import numpy as np
 
 import camera_rig
+import mission_config as cfg
 
 BAND_M = 0.10
 FWD_MIN_M = 0.55
@@ -49,6 +56,9 @@ GATE_YAW_RAD = math.radians(5.0)
 MAX_STRIP_OFFSET_M = 0.60          # fitted centreline within this of the robot axis
 MAX_STRIP_ANGLE_RAD = math.radians(12.0)
 GAIN_YAW = 0.12
+GAIN_LATERAL = 0.15                # per update (~15 Hz): ~1 s time constant
+GATE_LATERAL_M = 0.50              # larger innovations are left to landmark fixes
+AMBIGUITY_MARGIN_M = 0.60          # next-best lane must be this much further off
 
 
 def _floor_lut():
@@ -110,7 +120,7 @@ class LaneLocalizer:
             return None
         return float(a), float(b), len(f)
 
-    def correct(self, pose, lane_mask, now):
+    def correct(self, pose, lane_mask, now, lateral=True):
         """Returns the corrected (x, y, yaw) tuple, or None if no
         correction was applied."""
 
@@ -129,6 +139,43 @@ class LaneLocalizer:
             return None
         self.updates += 1
         self.last_update_t = now
-        self.last_innovation = (d_yaw, 0.0)
         new_yaw = pose.yaw + GAIN_YAW * d_yaw
-        return pose.x, pose.y, math.atan2(math.sin(new_yaw), math.cos(new_yaw))
+        x, y = pose.x, pose.y
+        d_lat = (self._lateral_innovation(pose, a, b, snapped)
+                 if lateral and cfg.LANE_MAP_DEFINED else None)
+        if d_lat is not None:
+            if abs(math.cos(snapped)) > 0.5:      # lane runs along world X: fix y
+                y += GAIN_LATERAL * d_lat
+            else:                                 # lane runs along world Y: fix x
+                x += GAIN_LATERAL * d_lat
+        self.last_innovation = (d_yaw, d_lat or 0.0)
+        return x, y, math.atan2(math.sin(new_yaw), math.cos(new_yaw))
+
+    @staticmethod
+    def _lateral_innovation(pose, a, b, snapped):
+        """Cross-lane correction (metres, world axis perpendicular to the
+        lane) that puts the seen strip centre on the surveyed centreline of
+        the matching LANE_NETWORK segment, or None if no unambiguous match."""
+
+        f0 = 1.2
+        c, s = math.cos(pose.yaw), math.sin(pose.yaw)
+        lat = a + b * f0
+        px, py = pose.x + c * f0 - s * lat, pose.y + s * f0 + c * lat
+        along_x = abs(math.cos(snapped)) > 0.5
+        cands = []
+        for poly in cfg.LANE_NETWORK:
+            for (x0, y0), (x1, y1) in zip(poly[:-1], poly[1:]):
+                if along_x and abs(y1 - y0) < 1e-6:
+                    if min(x0, x1) - 0.3 <= px <= max(x0, x1) + 0.3:
+                        cands.append(y0 - py)
+                elif not along_x and abs(x1 - x0) < 1e-6:
+                    if min(y0, y1) - 0.3 <= py <= max(y0, y1) + 0.3:
+                        cands.append(x0 - px)
+        if not cands:
+            return None
+        cands.sort(key=abs)
+        if abs(cands[0]) > GATE_LATERAL_M:
+            return None
+        if len(cands) > 1 and abs(cands[1]) - abs(cands[0]) < AMBIGUITY_MARGIN_M:
+            return None
+        return cands[0]

@@ -27,7 +27,15 @@ GlobalPlanner
     * any-angle line-of-sight smoothing; a shortcut whose two ends are on
       the lane must stay on the lane, so smoothing never cuts corners of
       the lane network;
-    * start/goal are snapped to the nearest traversable cell.
+    * start/goal are snapped to the nearest traversable cell;
+    * LANE CORRIDOR: once the lane layout is known, the search is confined
+      to cells within LANE_CORRIDOR_M of the painted lane (plus a small
+      disc round the start and the goal). Off-lane cells inside the
+      corridor still cost LANE_OFF_COST_MULTIPLIER, so the robot leaves
+      the paint only to step round an obstacle and rejoins it straight
+      after - it can never cut a diagonal across open floor. If the
+      corridor is closed it is widened once (LANE_CORRIDOR_WIDE_M); only
+      if that has no route either is the whole floor searched.
 """
 
 import heapq
@@ -63,12 +71,27 @@ PLANNER_UNKNOWN_OBSTACLE_GUARD_CELLS = 2
 # (an obstacle on it) or the goal itself is off the lane.
 LANE_UNKNOWN_COST_MULTIPLIER = 60.0
 LANE_OFF_COST_MULTIPLIER = 60.0
+LANE_EDGE_COST = 1.0
 # Squeeze penalty: in the band just outside the hard clearance the route
 # would pass an obstacle with only centimetres to spare - legal for A* but
 # rejected by the local planner's corridor check. Cost there ramps up to
 # the off-lane cost, so the route steps a cell or two off the lane to pass
 # an obstacle with real clearance instead of shaving it to stay on paint.
-PLANNER_SQUEEZE_BAND_M = 0.20
+PLANNER_SQUEEZE_BAND_M = 0.30
+# Lane corridor (see module docstring), measured from the EDGE of the
+# 0.6 m paint: 0.8 m allows a detour centre up to 1.1 m from the lane
+# centreline. Obstacles beside the lane are passed at ~0.75 m, but the
+# live map shows them a cell or two fatter than they are, so 0.6 m was
+# too tight to get round the spawn pallet.
+# START_GOAL radius lets the robot get from an off-lane work pose (dock,
+# shelf, truck) back onto the lane.
+LANE_CORRIDOR_M = 0.8
+# If the corridor is closed (e.g. a trolley that the live map shows a cell
+# fatter, with the wider conveyor module aboard) the search widens to this
+# before it is ever allowed onto the whole floor.
+LANE_CORRIDOR_WIDE_M = 1.4
+LANE_CORRIDOR_START_GOAL_RADIUS_M = 1.5
+LANE_CORRIDOR_END_SLACK_M = 0.10
 PLANNER_SNAP_RADIUS_CELLS = 15
 
 
@@ -106,6 +129,12 @@ class PlannerView:
         cost[unknown] *= PLANNER_UNKNOWN_COST_MULTIPLIER
         cost[~lane & ~non_lane] *= LANE_UNKNOWN_COST_MULTIPLIER
         cost[non_lane] *= LANE_OFF_COST_MULTIPLIER
+        # On the paint, prefer its middle: edge cells cost up to
+        # (1 + LANE_EDGE_COST). Routes then run down the centreline, where
+        # the camera line follower steers by the paint itself.
+        depth = cv2.distanceTransform(lane.astype(np.uint8), cv2.DIST_L2, 5) * cfg.GRID_RESOLUTION_M
+        edge = np.clip(1.0 - depth / (0.5 * cfg.LANE_WIDTH_M), 0.0, 1.0)
+        cost[lane] *= (1.0 + LANE_EDGE_COST * edge[lane]).astype(np.float32)
         squeeze = np.clip(1.0 - (clearance - hard) / PLANNER_SQUEEZE_BAND_M, 0.0, 1.0)
         cost += (LANE_OFF_COST_MULTIPLIER * squeeze).astype(np.float32)
         cost[blocked] = np.inf
@@ -120,6 +149,42 @@ class PlannerView:
         self.lane = lane
         self.non_lane = non_lane
         self.revision = occupancy_map.revision
+        self.lane_dist_m = (cv2.distanceTransform((~lane).astype(np.uint8), cv2.DIST_L2, 5)
+                            * cfg.GRID_RESOLUTION_M) if lane.any() else None
+        self.lane_depth_m = depth       # how deep inside the paint (0.1 m at its edge)
+
+    def is_blocked_world(self, x, y):
+        row, col = cfg.world_to_grid(x, y)
+        if not cfg.in_grid_bounds(row, col):
+            return True
+        return bool(self.blocked[row, col])
+
+
+class _CorridorView:
+    """A PlannerView restricted to the lane corridor (same interface as
+    far as the planner is concerned)."""
+
+    def __init__(self, view, start_xy, goal_xy, width_m=LANE_CORRIDOR_M):
+        rows, cols = view.cost.shape
+        rr, cc = np.mgrid[0:rows, 0:cols]
+        keep = view.lane_dist_m <= width_m
+        rad = LANE_CORRIDOR_START_GOAL_RADIUS_M / cfg.GRID_RESOLUTION_M
+        # Near the start and the goal the route may also use cells that are
+        # no further from the lane than that end itself: enough to get from
+        # an off-lane work pose onto the lane, but - because the start disc
+        # moves with the robot on every replan - never a licence to drift
+        # further away from the paint a little at a time.
+        for xy in (start_xy, goal_xy):
+            r0, c0 = cfg.world_to_grid(*xy)
+            if not cfg.in_grid_bounds(r0, c0):
+                continue
+            end_dist = view.lane_dist_m[r0, c0] + LANE_CORRIDOR_END_SLACK_M
+            keep |= (((rr - r0) ** 2 + (cc - c0) ** 2 <= rad * rad)
+                     & (view.lane_dist_m <= end_dist))
+        self.blocked = view.blocked | ~keep
+        self.traversable = ~self.blocked
+        self.cost = np.where(keep, view.cost, np.inf).astype(np.float32)
+        self.lane = view.lane
 
     def is_blocked_world(self, x, y):
         row, col = cfg.world_to_grid(x, y)
@@ -156,6 +221,7 @@ class GlobalPlanner:
         self.plans = 0
         self.failures = 0
         self.last_reason = ""
+        self.left_corridor = False
 
     @staticmethod
     def snap(view, cell, radius_cells=PLANNER_SNAP_RADIUS_CELLS):
@@ -223,8 +289,19 @@ class GlobalPlanner:
 
     def plan(self, view, start_xy, goal_xy):
         """Returns a dict: success, waypoints (world, smoothed), cells
-        (raw A* cells), length_m, reason."""
+        (raw A* cells), length_m, reason. Searches the lane corridor
+        first and the whole floor only if the corridor has no route."""
 
+        self.left_corridor = False
+        if getattr(view, "lane_dist_m", None) is not None:
+            for width in (LANE_CORRIDOR_M, LANE_CORRIDOR_WIDE_M):
+                res = self._plan(_CorridorView(view, start_xy, goal_xy, width), start_xy, goal_xy)
+                if res["success"]:
+                    return res
+            self.left_corridor = True
+        return self._plan(view, start_xy, goal_xy)
+
+    def _plan(self, view, start_xy, goal_xy):
         self.plans += 1
         start = self.snap(view, cfg.world_to_grid(*start_xy))
         goal = self.snap(view, cfg.world_to_grid(*goal_xy))
