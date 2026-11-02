@@ -303,7 +303,11 @@ class MissionController:
         # Lane-aided localisation: the painted lane is surveyed
         # infrastructure, so seeing it corrects heading + lateral drift.
         self._last_lane = lane_detector.detect_lane(sensors["center_bgr"])
-        fixed = self.lane_localizer.correct(pose, self._last_lane.mask, self.t)
+        # Lateral (cross-lane) fixes only while travelling between work
+        # poses; docking / shelf / truck manoeuvres use their own landmark
+        # sensing and must not be nudged mid-manoeuvre.
+        fixed = self.lane_localizer.correct(pose, self._last_lane.mask, self.t,
+                                            lateral=self.state in NAV_STATES)
         if fixed is not None:
             self.pose_estimator.pose = Pose2D(*fixed)
             pose = self.pose_estimator.get_pose()

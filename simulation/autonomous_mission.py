@@ -468,23 +468,8 @@ def arm_camera_panel(controller, width, height):
     if frame is None:
         img = np.full((height, width, 3), 25, np.uint8)
         return _label_panel(img, "ARM STEREO CAMERA (waiting)")
-    left = frame.left.copy()
-    if frame.box_mask is not None:
-        tint = np.zeros_like(left)
-        tint[frame.box_mask > 0] = (0, 255, 255)
-        left = cv2.addWeighted(left, 1.0, tint, 0.35, 0)
-    for b in frame.blocks:
-        u, v = b.pixel
-        cv2.drawMarker(left, (u, v), (0, 0, 255) if b.partial else (0, 255, 0), cv2.MARKER_CROSS, 14, 2)
-        cv2.putText(left, f"z{b.top_z:+.2f}", (u + 6, v - 6), cv2.FONT_HERSHEY_SIMPLEX, 0.35,
-                    (255, 255, 255), 1, cv2.LINE_AA)
-    disp = frame.disparity.copy()
-    disp[disp < 0] = 0
-    disp_vis = cv2.applyColorMap(np.clip(disp * 255.0 / 64.0, 0, 255).astype(np.uint8), cv2.COLORMAP_JET)
-    left = cv2.resize(left, (width, height))
-    inset_w, inset_h = width // 3, height // 3
-    left[height - inset_h:, width - inset_w:] = cv2.resize(disp_vis, (inset_w, inset_h))
-    return _label_panel(left, f"ARM STEREO (left + disparity) | {controller.arm.status}")
+    left = cv2.resize(frame.left, (width, height))
+    return _label_panel(left, f"ARM STEREO CAMERA | {controller.arm.status}")
 
 
 class VideoState:
@@ -511,8 +496,7 @@ def build_video_frame(io, controller, status, vstate):
     if in_arm:
         second = arm_camera_panel(controller, PANEL_W, PANEL_H)
     else:
-        _rgb, depth = io._render("left", 160, 120)
-        second = vid.lane_camera_panel(io, controller, colorize_depth(depth))
+        second = vid.lane_camera_panel(io, controller)
 
     pose = controller.pose_estimator.get_pose()
     lane = controller._last_lane

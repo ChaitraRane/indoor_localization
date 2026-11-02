@@ -183,96 +183,36 @@ class ChaseCamera:
 
 
 def chase_panel(chase, io, controller, mode, close_target):
+    """Plain PyBullet render from the chase / close-up camera: nothing is
+    drawn into the scene."""
+
     img = chase.render(io.robot_id, mode, close_target)
-    gx, gy, gyaw = io.true_pose()
     if mode == "drive":
-        chase.draw_floor_poly(img, body_to_world(DEPTH_FOV_BODY, gx, gy, gyaw), COL_DEPTH_FOV, 0.18)
-        chase.draw_floor_poly(img, body_to_world(LANE_FOV_BODY, gx, gy, gyaw), COL_LANE_FOV, 0.25)
-    path = controller.active_path
-    if path:
-        chase.draw_polyline(img, densify(path, 0.25), COL_ROUTE)
-    if mode == "drive":
-        return label(img, "CHASE CAMERA | blue = RGB-D depth FOV | yellow = lane-camera FOV | cyan = A* route",
-                     scale=0.45)
-    return label(img, "CLOSE-UP CAMERA (belt nose)" if mode == "conveyor" else "CLOSE-UP CAMERA")
+        return label(img, "PYBULLET SIMULATION - chase camera")
+    return label(img, "PYBULLET SIMULATION - close-up (belt nose)" if mode == "conveyor"
+                 else "PYBULLET SIMULATION - close-up")
 
 
 # ------------------------------------------------------------------ lane camera panel
 
-_LANE_GEOM = {}
+def lane_camera_panel(io, controller, depth_vis=None):
+    """The robot's own lane camera as rendered by PyBullet, full panel,
+    with no overlay in the image. The lane-tracking result is reported in
+    a text strip underneath."""
 
-
-def _lane_geom(w, h):
-    if (w, h) not in _LANE_GEOM:
-        eye, fwd, up = camera_rig.build_camera_frame(0.0, 0.0, 0.0, "center")
-        right = np.cross(fwd, up)
-        R = np.column_stack((right, -up, fwd))
-        f = (h / 2.0) / math.tan(math.radians(camera_rig.CAMERA_FOV_DEG) / 2.0)
-        _LANE_GEOM[(w, h)] = (eye, R, f)
-    return _LANE_GEOM[(w, h)]
-
-
-def lane_camera_panel(io, controller, depth_vis):
-    """Centre (lane) camera at display resolution with the lane detection
-    overlaid, the fitted centreline the controller is tracking, and a
-    depth inset from the forward RGB-D camera."""
-
-    w, h = 480, PANEL_H
-    rgb = io.render_camera("center", w, h)
-    det = lane_detector.detect_lane(rgb)
-    out = rgb.copy()
-    if det.mask is not None:
-        tint = np.zeros_like(out)
-        tint[det.mask > 0] = (0, 255, 0)
-        out = cv2.addWeighted(out, 1.0, tint, 0.45, 0)
-        cnts, _ = cv2.findContours(det.mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        cv2.drawContours(out, cnts, -1, (0, 255, 0), 1, cv2.LINE_AA)
-
-    eye, R, f = _lane_geom(w, h)
-
-    def to_px(fw, lat):
-        pc = R.T @ (np.array([fw, lat, 0.0]) - eye)
-        if pc[2] <= 0.05:
-            return None
-        return int(f * pc[0] / pc[2] + w / 2.0), int(f * pc[1] / pc[2] + h / 2.0)
-
-    a0, a1 = to_px(0.6, 0.0), to_px(3.0, 0.0)          # straight-ahead heading line
-    if a0 and a1:
-        cv2.line(out, a0, a1, (255, 255, 255), 1, cv2.LINE_AA)
+    w, h = PANEL_W, PANEL_H
+    out = io.render_camera("center", w, h).copy()
+    det = lane_detector.detect_lane(out)
     fit = controller.lane_localizer.last_fit
     if fit is not None:
         a, b = fit
-        pts = [to_px(fw, a + b * fw) for fw in np.linspace(0.6, 3.0, 12)]
-        pts = [q for q in pts if q is not None]
-        for q0, q1 in zip(pts[:-1], pts[1:]):
-            cv2.line(out, q0, q1, (255, 0, 255), 3, cv2.LINE_AA)
-        txt = f"tracked lane centreline: offset {a*100:+.0f} cm, angle {math.degrees(math.atan(b)):+.1f} deg"
-        col = (255, 0, 255)
+        txt = f"lane tracked: offset {a*100:+.0f} cm, angle {math.degrees(math.atan(b)):+.1f} deg"
     else:
-        txt = "lane seen (junction / curve - no straight strip to fit)" if det.detected else "no lane in view"
-        col = (200, 200, 200)
+        txt = "lane seen (junction / curve)" if det.detected else "no lane in view"
     cv2.rectangle(out, (0, h - 26), (w, h), (0, 0, 0), -1)
-    cv2.putText(out, txt, (8, h - 8), cv2.FONT_HERSHEY_SIMPLEX, 0.45, col, 1, cv2.LINE_AA)
-
-    sw = PANEL_W - w
-    side = np.full((PANEL_H, sw, 3), 20, np.uint8)
-    dh = int(sw * 0.75)
-    cv2.putText(side, "RGB-D depth", (6, 42), cv2.FONT_HERSHEY_SIMPLEX, 0.42, (255, 255, 255), 1, cv2.LINE_AA)
-    side[48:48 + dh] = cv2.resize(depth_vis, (sw, dh))
-    y0 = 48 + dh + 24
-    cv2.putText(side, "lane mask (HSV)", (6, y0 - 6), cv2.FONT_HERSHEY_SIMPLEX, 0.42, (255, 255, 255), 1, cv2.LINE_AA)
-    if det.mask is not None:
-        m = cv2.resize(det.mask, (sw, dh), interpolation=cv2.INTER_NEAREST) > 0
-        side[y0:y0 + dh][m] = (0, 255, 0)
-    y1 = y0 + dh + 20
-    for t, c in (("green   lane pixels", (0, 255, 0)), ("magenta tracked line", (255, 0, 255)),
-                 ("white   robot heading", (255, 255, 255))):
-        if y1 < PANEL_H - 4:
-            cv2.putText(side, t, (6, y1), cv2.FONT_HERSHEY_SIMPLEX, 0.38, c, 1, cv2.LINE_AA)
-        y1 += 16
-    panel = np.hstack((out, side))
-    return label(panel, f"LANE CAMERA - live lane detection: {'LANE DETECTED' if det.detected else 'no lane'}"
-                        f" | drive cmd {io.last_command}", (0, 255, 0) if det.detected else (0, 200, 255), 0.5)
+    cv2.putText(out, txt, (8, h - 8), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 255), 1, cv2.LINE_AA)
+    return label(out, f"ROBOT LANE CAMERA | {'LANE DETECTED' if det.detected else 'no lane'}"
+                      f" | drive cmd {io.last_command}", (0, 255, 0) if det.detected else (0, 200, 255), 0.5)
 
 
 # ------------------------------------------------------------------ occupancy map panel

@@ -68,10 +68,16 @@ K_HEADING = 1.8
 LOOKAHEAD_M = 0.60            # short: hug the lane through its corners
 ROTATE_ENTER_DEG = 40.0
 ROTATE_EXIT_DEG = 12.0
+# A rotate-in-place that turns less than this in ROTATE_STALL_S is
+# physically blocked (a chassis corner against an obstacle): recover.
+ROTATE_STALL_S = 4.0
+ROTATE_STALL_MIN_DEG = 8.0
 
 LANE_TRIM_GAIN = 0.45            # rad/s per unit normalised cross-track
 LANE_FOLLOW_K_ANGLE = 1.8        # rad/s per rad of lane angle (line follower)
 LANE_FOLLOW_K_OFFSET = 1.5       # rad/s per metre of lane offset
+LANE_FOLLOW_CHECK_POINTS = 15     # route points (0.1 m apart) that must run mid-lane
+LANE_FOLLOW_MIN_DEPTH_M = 0.15    # route point at least this far inside the paint edge
 LANE_TRIM_MAX_RPS = 0.20
 
 # Route maintenance.
@@ -142,6 +148,8 @@ class Navigator:
         self._search_t0 = None
         self._recover_t0 = None
         self._recover_start_xy = None
+        self._recover_dir = -1.0           # -1 back off, +1 creep forward
+        self._rotate_ref = None            # (t, yaw) when the current rotation started
         self._progress_ref = None
         self._progress_t = now
         self.local.reset()
@@ -258,11 +266,12 @@ class Navigator:
                 break
         return False
 
-    def _rear_clear(self, pose, view):
-        for d in (cfg.AMR_HALF_LENGTH_M + 0.10, cfg.AMR_HALF_LENGTH_M + 0.25):
+    def _rear_clear(self, pose, view, sign=-1.0):
+        """Free floor just behind (sign=-1) or just ahead (sign=+1)."""
+        for d in (sign * (cfg.AMR_HALF_LENGTH_M + 0.10), sign * (cfg.AMR_HALF_LENGTH_M + 0.25)):
             for lat in (-cfg.AMR_HALF_WIDTH_M, 0.0, cfg.AMR_HALF_WIDTH_M):
-                x = pose.x - d * math.cos(pose.yaw) - lat * math.sin(pose.yaw)
-                y = pose.y - d * math.sin(pose.yaw) + lat * math.cos(pose.yaw)
+                x = pose.x + d * math.cos(pose.yaw) - lat * math.sin(pose.yaw)
+                y = pose.y + d * math.sin(pose.yaw) + lat * math.cos(pose.yaw)
                 r, c = cfg.world_to_grid(x, y)
                 if not cfg.in_grid_bounds(r, c) or view.occupied[r, c]:
                     return False
@@ -334,7 +343,15 @@ class Navigator:
         # 4. recovery in progress
         if self.state == NAV_RECOVER_STOP:
             if now - self._recover_t0 >= RECOVER_STOP_S:
-                self.state = NAV_RECOVER_BACK if self._rear_clear(pose, view) else NAV_FOLLOW
+                # Back off; if the rear is blocked (e.g. a pallet behind
+                # the robot) creep forward instead, so it is never left
+                # wedged in place.
+                if self._rear_clear(pose, view, -1.0):
+                    self.state, self._recover_dir = NAV_RECOVER_BACK, -1.0
+                elif self._rear_clear(pose, view, +1.0):
+                    self.state, self._recover_dir = NAV_RECOVER_BACK, +1.0
+                else:
+                    self.state = NAV_FOLLOW
                 self._recover_t0 = now
                 self._recover_start_xy = (pose.x, pose.y)
                 if self.state == NAV_FOLLOW:
@@ -343,11 +360,11 @@ class Navigator:
         if self.state == NAV_RECOVER_BACK:
             backed = math.hypot(pose.x - self._recover_start_xy[0], pose.y - self._recover_start_xy[1])
             if (backed >= RECOVER_BACK_M or now - self._recover_t0 > RECOVER_BACK_MAX_S
-                    or not self._rear_clear(pose, view)):
+                    or not self._rear_clear(pose, view, self._recover_dir)):
                 self.state = NAV_FOLLOW
                 self.replan(pose, now, "recovery", force=True)
                 self._progress_ref, self._progress_t = None, now
-            return NavCommand(-RECOVER_BACK_SPEED_MPS, 0.0, NAV_RECOVER_BACK, self.message)
+            return NavCommand(self._recover_dir * RECOVER_BACK_SPEED_MPS, 0.0, NAV_RECOVER_BACK, self.message)
 
         # Stall watchdog (no progress toward the goal for a while).
         if self._progress_ref is None or dist_goal < self._progress_ref - STALL_MIN_PROGRESS_M:
@@ -382,11 +399,22 @@ class Navigator:
         if self.state == NAV_ROTATE:
             if abs(bearing_deg) <= ROTATE_EXIT_DEG:
                 self.state = NAV_FOLLOW
+                self._rotate_ref = None
             else:
+                if self._rotate_ref is None:
+                    self._rotate_ref = (now, pose.yaw)
+                elif now - self._rotate_ref[0] > ROTATE_STALL_S:
+                    turned = abs(math.degrees(wrap(pose.yaw - self._rotate_ref[1])))
+                    if turned < ROTATE_STALL_MIN_DEG:
+                        self._rotate_ref = None
+                        self._enter_recovery(pose, now, "rotation blocked")
+                        return NavCommand(0.0, 0.0, NAV_RECOVER_STOP, self.message)
+                    self._rotate_ref = (now, pose.yaw)
                 w = math.copysign(min(ROTATE_ANGULAR_RPS, max(0.25, 1.5 * abs(bearing))), bearing)
                 return NavCommand(0.0, w, NAV_ROTATE)
         elif abs(bearing_deg) > ROTATE_ENTER_DEG and self.state != NAV_AVOID:
             self.state = NAV_ROTATE
+            self._rotate_ref = (now, pose.yaw)
             w = math.copysign(ROTATE_ANGULAR_RPS, bearing)
             return NavCommand(0.0, w, NAV_ROTATE)
 
@@ -451,10 +479,19 @@ class Navigator:
         # 9. lane tracking: while the route runs straight along mapped lane,
         # steer by the PAINT itself (camera centreline fit, metres) - a line
         # follower - and let the route only decide where to turn.
+        # Only where the route runs down the MIDDLE of the paint for the next
+        # stretch: a route shifted to the edge of the lane to clear an
+        # obstacle (e.g. the crate beside the aisle lane) is still "on lane"
+        # cells, but the line follower would pull the robot back to the
+        # centre and into the obstacle.
         r, c = cfg.world_to_grid(pose.x, pose.y)
-        lr, lc = cfg.world_to_grid(*look)
-        on_lane_route = (cfg.in_grid_bounds(r, c) and cfg.in_grid_bounds(lr, lc)
-                         and view.lane[r, c] and view.lane[lr, lc])
+        on_lane_route = cfg.in_grid_bounds(r, c) and view.lane[r, c]
+        for (px, py) in self.path[self.path_idx:self.path_idx + LANE_FOLLOW_CHECK_POINTS]:
+            pr, pc = cfg.world_to_grid(px, py)
+            if not (on_lane_route and cfg.in_grid_bounds(pr, pc)
+                    and view.lane_depth_m[pr, pc] >= LANE_FOLLOW_MIN_DEPTH_M):
+                on_lane_route = False
+                break
         if on_lane_route and abs(bearing_deg) < 20.0:
             if lane_fit is not None and abs(lane_fit[0]) < 0.45:
                 a, b = lane_fit
